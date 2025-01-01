@@ -2,119 +2,205 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const pidusage = require('pidusage');
+const simpleGit = require('simple-git');
 
 class DeploymentService {
-    constructor() {
+    constructor(db) {
+        this.db = db;
         this.processes = new Map();
+        this.logs = new Map();
+        this.autoStart = true; // Default to true
+        
+        // Initialize logs and process info for existing repositories
+        this.initializeRepositories().catch(err => {
+            console.error('Error initializing repositories:', err);
+        });
     }
 
-    async startProcess(userId, repoId, repoName) {
-        const deployDir = path.join(__dirname, '..', 'deployments', userId.toString(), repoName);
-        
-        try {
-            // Initialize logs for this repository
-            this.processes.set(repoId, {
-                logs: [{
-                    type: 'stdout',
-                    message: 'Starting deployment process...',
-                    timestamp: new Date()
-                }],
-                stats: {
-                    cpu: 0,
-                    memory: 0,
-                    maxMemory: 512 // Default max memory in MB
-                }
+    // Helper method to promisify database queries
+    dbGet(sql, params = []) {
+        return new Promise((resolve, reject) => {
+            this.db.get(sql, params, (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
             });
+        });
+    }
 
-            // Read package.json or requirements.txt to determine project type
-            const files = await fs.readdir(deployDir);
-            let processCommand;
-            let processArgs;
+    dbAll(sql, params = []) {
+        return new Promise((resolve, reject) => {
+            this.db.all(sql, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+    }
 
-            this.addLog(repoId, 'stdout', `Detected files in directory: ${files.join(', ')}`);
+    dbRun(sql, params = []) {
+        return new Promise((resolve, reject) => {
+            this.db.run(sql, params, function(err) {
+                if (err) reject(err);
+                else resolve(this);
+            });
+        });
+    }
 
-            if (files.includes('package.json')) {
-                // Node.js project
-                const packageJson = JSON.parse(
-                    await fs.readFile(path.join(deployDir, 'package.json'), 'utf-8')
-                );
+    async getRepository(repoId) {
+        try {
+            return await this.dbGet('SELECT * FROM repositories WHERE id = ?', [repoId]);
+        } catch (error) {
+            console.error('Error getting repository:', error);
+            throw error;
+        }
+    }
 
-                this.addLog(repoId, 'stdout', 'Detected Node.js project');
-                const startScript = packageJson.scripts?.start || 'node index.js';
-                this.addLog(repoId, 'stdout', `Using start command: ${startScript}`);
+    async getAllRepositories() {
+        try {
+            return await this.dbAll('SELECT * FROM repositories');
+        } catch (error) {
+            console.error('Error getting all repositories:', error);
+            throw error;
+        }
+    }
 
-                const [cmd, ...args] = startScript.split(' ');
-                processCommand = cmd;
-                processArgs = args;
-            } else if (files.includes('requirements.txt')) {
-                // Python project
-                const pythonFiles = files.filter(f => f.endsWith('.py'));
-                if (pythonFiles.includes('app.py') || pythonFiles.includes('main.py')) {
-                    processCommand = 'python';
-                    processArgs = [pythonFiles.includes('app.py') ? 'app.py' : 'main.py'];
-                    this.addLog(repoId, 'stdout', `Detected Python project, using ${processArgs[0]}`);
-                } else {
-                    throw new Error('No main Python file found');
+    async initializeRepositories() {
+        try {
+            const repos = await this.getAllRepositories();
+            for (const repo of repos) {
+                if (!this.logs.has(repo.id)) {
+                    this.logs.set(repo.id, []);
                 }
-            } else {
-                throw new Error('Unsupported project type');
+                if (!this.processes.has(repo.id)) {
+                    this.processes.set(repo.id, {
+                        logs: [],
+                        stats: {
+                            cpu: 0,
+                            memory: 0,
+                            maxMemory: 512
+                        }
+                    });
+                }
+            }
+            // Auto-start repositories if enabled
+            if (this.autoStart) {
+                for (const repo of repos) {
+                    await this.startProcess(repo.id, false);
+                }
+            }
+        } catch (error) {
+            console.error('Error initializing repositories:', error);
+            throw error;
+        }
+    }
+
+    setAutoStart(enabled) {
+        this.autoStart = enabled;
+    }
+
+    async startProcess(repoId, shouldPull = false) {
+        try {
+            const repo = await this.getRepository(repoId);
+            if (!repo) {
+                throw new Error('Repository not found');
             }
 
-            // Kill existing process if it exists
-            this.stopProcess(repoId);
+            // Initialize process info if not exists
+            if (!this.processes.has(repoId)) {
+                this.processes.set(repoId, {
+                    logs: [],
+                    stats: {
+                        cpu: 0,
+                        memory: 0,
+                        maxMemory: 512
+                    }
+                });
+            }
 
-            // Get available port
-            const port = this.getAvailablePort();
-            this.addLog(repoId, 'stdout', `Assigned port: ${port}`);
+            this.addLog(repoId, 'info', `Starting deployment process for ${repo.repo_name}`);
 
-            // Start new process
-            const childProcess = spawn(processCommand, processArgs, {
-                cwd: deployDir,
-                env: { ...process.env, PORT: port }
+            // Stop existing process if running
+            await this.stopProcess(repoId);
+
+            // Pull latest changes if requested
+            if (shouldPull) {
+                this.addLog(repoId, 'info', 'Pulling latest changes from repository...');
+                await this.pullRepository(repo);
+            }
+
+            // Detect project type and get start command
+            const startCommand = await this.detectProjectType(repo.deploy_path, repoId);
+            if (!startCommand) {
+                throw new Error('Could not determine project type');
+            }
+
+            // Get an available port for internal use
+            const internalPort = await this.getAvailablePort();
+            
+            // Set up environment with the internal port
+            const env = { 
+                ...process.env, 
+                PORT: internalPort,
+                INTERNAL_PORT: internalPort
+            };
+
+            // Start the process
+            const childProcess = spawn(startCommand.command, startCommand.args, {
+                cwd: repo.deploy_path,
+                env: env
             });
 
-            // Update process information
+            // Update process info with the child process and port
             const processInfo = this.processes.get(repoId);
             processInfo.process = childProcess;
-            processInfo.port = port;
+            processInfo.port = internalPort;
 
             // Handle process output
             childProcess.stdout.on('data', (data) => {
-                this.addLog(repoId, 'stdout', data.toString().trim());
-            });
-
-            childProcess.stderr.on('data', (data) => {
-                this.addLog(repoId, 'stderr', data.toString().trim());
-            });
-
-            childProcess.on('error', (error) => {
-                this.addLog(repoId, 'stderr', `Process error: ${error.message}`);
-            });
-
-            childProcess.on('close', (code) => {
-                this.addLog(repoId, code === 0 ? 'stdout' : 'stderr', 
-                    `Process exited with code ${code}`);
-                // Don't delete the process info so we keep the logs
-                if (this.processes.has(repoId)) {
-                    const info = this.processes.get(repoId);
-                    delete info.process;
+                const output = data.toString();
+                this.addLog(repoId, 'stdout', output);
+                
+                // Try to detect port from application output
+                const portMatch = output.match(/(?:listening|running|started).+?(?:port|:)\s*(\d+)/i);
+                if (portMatch && portMatch[1]) {
+                    const detectedPort = parseInt(portMatch[1]);
+                    if (detectedPort !== internalPort) {
+                        this.addLog(repoId, 'info', `Detected application trying to use port ${detectedPort}, redirecting to internal port ${internalPort}`);
+                    }
                 }
             });
 
-            // Start stats monitoring
-            this.startStatsMonitoring(repoId, childProcess.pid);
+            childProcess.stderr.on('data', (data) => {
+                this.addLog(repoId, 'stderr', data.toString());
+            });
 
-            return {
-                success: true,
-                port: port
-            };
+            childProcess.on('error', (error) => {
+                this.addLog(repoId, 'error', `Process error: ${error.message}`);
+            });
+
+            childProcess.on('exit', (code) => {
+                this.addLog(repoId, code === 0 ? 'info' : 'error', 
+                    `Process exited with code ${code}`);
+                // Don't delete the process info, just remove the process reference
+                const processInfo = this.processes.get(repoId);
+                if (processInfo) {
+                    delete processInfo.process;
+                }
+            });
+
+            // Start monitoring process stats
+            if (childProcess.pid) {
+                this.startStatsMonitoring(repoId, childProcess.pid);
+            }
+            
+            // Update repository status
+            await this.updateRepositoryStatus(repoId, 'SUCCESS');
+            
+            this.addLog(repoId, 'info', `Deployment process started successfully on internal port ${internalPort}`);
+            return true;
         } catch (error) {
-            this.addLog(repoId, 'stderr', `Deployment error: ${error.message}`);
-            console.error('Error starting process:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            this.addLog(repoId, 'error', `Failed to start process: ${error.message}`);
+            await this.updateRepositoryStatus(repoId, 'FAILED');
+            throw error;
         }
     }
 
@@ -154,44 +240,52 @@ class DeploymentService {
     }
 
     addLog(repoId, type, message) {
-        console.log(`[${type}] ${message}`); // Debug logging
-        const processInfo = this.processes.get(repoId);
-        if (processInfo) {
-            processInfo.logs.push({
-                type,
-                message: message.toString(),
-                timestamp: new Date()
+        // Initialize process info if not exists
+        if (!this.processes.has(repoId)) {
+            this.processes.set(repoId, {
+                logs: [],
+                stats: {
+                    cpu: 0,
+                    memory: 0,
+                    maxMemory: 512
+                }
             });
-            // Keep only last 100 log entries
-            if (processInfo.logs.length > 100) {
-                processInfo.logs.shift();
-            }
+        }
+
+        const processInfo = this.processes.get(repoId);
+        processInfo.logs.push({
+            type,
+            message: message.toString(),
+            timestamp: new Date()
+        });
+
+        // Keep only last 100 log entries
+        if (processInfo.logs.length > 100) {
+            processInfo.logs.shift();
         }
     }
 
     stopProcess(repoId) {
         const processInfo = this.processes.get(repoId);
-        if (processInfo) {
+        if (processInfo && processInfo.process) {
             // Clear stats monitoring interval
             if (processInfo.statsInterval) {
                 clearInterval(processInfo.statsInterval);
                 delete processInfo.statsInterval;
             }
 
-            // Kill the process if it exists
-            if (processInfo.process) {
-                this.addLog(repoId, 'stdout', 'Stopping process...');
-                processInfo.process.kill();
-                delete processInfo.process;
+            // Kill the process
+            this.addLog(repoId, 'info', 'Stopping process...');
+            processInfo.process.kill();
+            delete processInfo.process;
 
-                // Reset stats
-                processInfo.stats = {
-                    cpu: 0,
-                    memory: 0,
-                    maxMemory: processInfo.stats.maxMemory
-                };
-                return true;
-            }
+            // Reset stats
+            processInfo.stats = {
+                cpu: 0,
+                memory: 0,
+                maxMemory: processInfo.stats.maxMemory
+            };
+            return true;
         }
         return false;
     }
@@ -228,6 +322,148 @@ class DeploymentService {
             maxMemory: 512
         };
     }
+
+    async updateRepositoryStatus(repoId, status) {
+        try {
+            await this.dbRun(
+                'UPDATE repositories SET status = ? WHERE id = ?',
+                [status, repoId]
+            );
+        } catch (error) {
+            console.error('Error updating repository status:', error);
+            throw error;
+        }
+    }
+
+    async cloneAndDeploy(repoId, repoUrl) {
+        try {
+            const repo = await this.getRepository(repoId);
+            if (!repo) {
+                throw new Error('Repository not found');
+            }
+
+            // Initialize logs
+            if (!this.logs.has(repoId)) {
+                this.logs.set(repoId, []);
+            }
+
+            this.addLog(repoId, 'info', 'Starting repository setup...');
+
+            // Create deployment directory
+            const deployDir = repo.deploy_path;
+            await fs.mkdir(deployDir, { recursive: true });
+
+            // Clone repository
+            this.addLog(repoId, 'info', 'Cloning repository...');
+            const git = simpleGit(deployDir);
+            await git.clone(repoUrl, '.');
+
+            // Start the deployment process
+            this.addLog(repoId, 'info', 'Starting initial deployment...');
+            await this.startProcess(repoId, false);
+
+            return true;
+        } catch (error) {
+            this.addLog(repoId, 'error', `Setup failed: ${error.message}`);
+            await this.updateRepositoryStatus(repoId, 'FAILED');
+            throw error;
+        }
+    }
+
+    async pullRepository(repo) {
+        try {
+            const git = simpleGit(repo.deploy_path);
+            await git.pull();
+            return true;
+        } catch (error) {
+            console.error('Error pulling repository:', error);
+            throw error;
+        }
+    }
+
+    async detectProjectType(deployPath, repoId) {
+        try {
+            const files = await fs.readdir(deployPath);
+            
+            // Check for package.json (Node.js project)
+            if (files.includes('package.json')) {
+                const packageJson = JSON.parse(
+                    await fs.readFile(path.join(deployPath, 'package.json'), 'utf-8')
+                );
+
+                if (repoId) {
+                    this.addLog(repoId, 'info', 'Detected Node.js project');
+                }
+                
+                // Use the start script from package.json or default to node index.js
+                const startScript = packageJson.scripts?.start || 'node index.js';
+                if (repoId) {
+                    this.addLog(repoId, 'info', `Using start command: ${startScript}`);
+                }
+
+                const [command, ...args] = startScript.split(' ');
+                return { command, args };
+            }
+            
+            // Check for requirements.txt (Python project)
+            if (files.includes('requirements.txt')) {
+                const pythonFiles = files.filter(f => f.endsWith('.py'));
+                if (pythonFiles.includes('app.py') || pythonFiles.includes('main.py')) {
+                    if (repoId) {
+                        this.addLog(repoId, 'info', 'Detected Python project');
+                    }
+                    const mainFile = pythonFiles.includes('app.py') ? 'app.py' : 'main.py';
+                    return {
+                        command: 'python',
+                        args: [mainFile]
+                    };
+                }
+            }
+
+            // Check for pom.xml (Java Maven project)
+            if (files.includes('pom.xml')) {
+                if (repoId) {
+                    this.addLog(repoId, 'info', 'Detected Java Maven project');
+                }
+                return {
+                    command: 'mvn',
+                    args: ['spring-boot:run']
+                };
+            }
+
+            // Check for build.gradle (Java Gradle project)
+            if (files.includes('build.gradle')) {
+                if (repoId) {
+                    this.addLog(repoId, 'info', 'Detected Java Gradle project');
+                }
+                return {
+                    command: 'gradle',
+                    args: ['bootRun']
+                };
+            }
+
+            // Check for go.mod (Go project)
+            if (files.includes('go.mod')) {
+                if (repoId) {
+                    this.addLog(repoId, 'info', 'Detected Go project');
+                }
+                return {
+                    command: 'go',
+                    args: ['run', '.']
+                };
+            }
+
+            throw new Error('Unsupported project type');
+        } catch (error) {
+            console.error('Error detecting project type:', error);
+            throw error;
+        }
+    }
+
+    getProcessPort(repoId) {
+        const processInfo = this.processes.get(repoId);
+        return processInfo ? processInfo.port : null;
+    }
 }
 
-module.exports = new DeploymentService(); 
+module.exports = DeploymentService; 

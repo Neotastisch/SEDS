@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - SEDS</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <%- include('partials/sidebar') %>
+
+        <!-- Main Content -->
+        <div class="ml-64 p-8">
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold text-gray-800">Settings</h2>
+                <p class="text-gray-600">Configure your deployment settings</p>
+            </div>
+
+            <!-- Settings Sections -->
+            <div class="space-y-6">
+                <!-- GitHub Settings -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">GitHub Integration</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Connected Account</label>
+                            <div class="mt-1 flex items-center">
+                                <span class="text-gray-900"><%= user.username %></span>
+                                <a href="/auth/github" class="ml-4 text-sm text-blue-600 hover:text-blue-800">
+                                    Reconnect
+                                </a>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Webhook URL</label>
+                            <div class="mt-1 flex items-center">
+                                <input type="text" readonly value="http://your-domain/repositories/webhook/{repoId}" class="flex-1 px-3 py-2 bg-gray-50 border rounded text-gray-500">
+                                <button onclick="copyWebhookUrl(this)" class="ml-2 px-3 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                            <p class="mt-1 text-sm text-gray-500">Use this URL in your GitHub repository's webhook settings.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Deployment Settings -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Deployment Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Default Branch</label>
+                            <select class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                                <option>main</option>
+                                <option>master</option>
+                                <option>development</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Auto-Deploy on Push</label>
+                            <div class="mt-1">
+                                <label class="inline-flex items-center">
+                                    <input type="checkbox" class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50" checked>
+                                    <span class="ml-2">Enable automatic deployment when changes are pushed</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Auto-Start Applications</label>
+                            <div class="mt-1">
+                                <label class="inline-flex items-center">
+                                    <input type="checkbox" id="autoStartApps" class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50" checked>
+                                    <span class="ml-2">Automatically start all applications when SEDS starts</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Settings -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">System Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Maximum Memory per Project</label>
+                            <div class="mt-1 flex rounded-md shadow-sm">
+                                <input type="number" value="512" class="flex-1 min-w-0 block w-full px-3 py-2 rounded-none rounded-l-md border focus:ring-blue-500 focus:border-blue-500 sm:text-sm border-gray-300">
+                                <span class="inline-flex items-center px-3 rounded-r-md border border-l-0 border-gray-300 bg-gray-50 text-gray-500 sm:text-sm">
+                                    MB
+                                </span>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Log Retention</label>
+                            <select class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                                <option>1 day</option>
+                                <option>7 days</option>
+                                <option selected>30 days</option>
+                                <option>90 days</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function copyWebhookUrl(button) {
+            const input = button.parentElement.querySelector('input');
+            input.select();
+            document.execCommand('copy');
+            
+            // Show feedback
+            const icon = button.querySelector('i');
+            icon.className = 'fas fa-check';
+            setTimeout(() => {
+                icon.className = 'fas fa-copy';
+            }, 2000);
+        }
+    </script>
+</body>
+</html> 

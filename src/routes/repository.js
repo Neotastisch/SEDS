@@ -5,7 +5,10 @@ const path = require('path');
 const fs = require('fs').promises;
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('database.sqlite');
-const deploymentService = require('../services/deployment');
+const DeploymentService = require('../services/deployment');
+const deploymentService = new DeploymentService(db);
+const { Octokit } = require('@octokit/rest');
+const crypto = require('crypto');
 
 // Helper function to execute database queries as promises
 function dbRun(query, params = []) {
@@ -41,6 +44,73 @@ function ensureAuthenticated(req, res, next) {
     res.redirect('/login');
 }
 
+// Helper function to verify webhook signature
+function verifyWebhookSignature(payload, signature) {
+    if (!signature) return false;
+    
+    const sig = Buffer.from(signature, 'utf8');
+    const hmac = crypto.createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET);
+    const digest = Buffer.from('sha256=' + hmac.update(payload).digest('hex'), 'utf8');
+    
+    if (sig.length !== digest.length || !crypto.timingSafeEqual(digest, sig)) {
+        return false;
+    }
+    return true;
+}
+
+// Helper function to set up GitHub webhook
+async function setupWebhook(accessToken, owner, repo, webhookUrl) {
+    const octokit = new Octokit({ auth: accessToken });
+    
+    try {
+        // Check if webhook already exists
+        const webhooks = await octokit.repos.listWebhooks({
+            owner,
+            repo
+        });
+
+        const existingWebhook = webhooks.data.find(hook => 
+            hook.config.url === webhookUrl
+        );
+
+        if (existingWebhook) {
+            // Update existing webhook
+            await octokit.repos.updateWebhook({
+                owner,
+                repo,
+                hook_id: existingWebhook.id,
+                config: {
+                    url: webhookUrl,
+                    content_type: 'json',
+                    secret: process.env.GITHUB_WEBHOOK_SECRET,
+                    insecure_ssl: '0'
+                },
+                events: ['push'],
+                active: true
+            });
+        } else {
+            // Create new webhook
+            await octokit.repos.createWebhook({
+                owner,
+                repo,
+                config: {
+                    url: webhookUrl,
+                    content_type: 'json',
+                    secret: process.env.GITHUB_WEBHOOK_SECRET,
+                    insecure_ssl: '0'
+                },
+                events: ['push'],
+                active: true
+            });
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('Error setting up webhook:', error);
+        return false;
+    }
+}
+
 // Route to show add repository form
 router.get('/add', ensureAuthenticated, (req, res) => {
     res.render('add-repository');
@@ -51,30 +121,33 @@ router.post('/add', ensureAuthenticated, async (req, res) => {
     const { repoUrl } = req.body;
     
     try {
-        // Extract repository name from URL
-        const repoName = repoUrl.split('/').pop().replace('.git', '');
-        
-        // Add repository to database
-        const result = await dbRun(
-            'INSERT INTO repositories (user_id, repo_name, repo_url, status) VALUES (?, ?, ?, ?)',
-            [req.user.id, repoName, repoUrl, 'PENDING']
-        );
+        // Extract owner and repo name from URL
+        const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid GitHub repository URL' });
+        }
 
-        // Create deployment directory
+        const [, owner, repoName] = match;
+
+        // Create deployment directory path
         const deployDir = path.join(__dirname, '..', 'deployments', req.user.id.toString(), repoName);
-        await fs.mkdir(deployDir, { recursive: true });
 
-        // Clone repository
-        const git = simpleGit(deployDir);
-        await git.clone(repoUrl, '.');
-
-        // Update status to success
-        await dbRun(
-            'UPDATE repositories SET status = ? WHERE id = ?',
-            ['SUCCESS', result.lastID]
+        // Insert repository into database
+        const result = await dbRun(
+            'INSERT INTO repositories (user_id, repo_name, repo_url, deploy_path, status) VALUES (?, ?, ?, ?, ?)',
+            [req.user.id, repoName, repoUrl, deployDir, 'PENDING']
         );
 
-        res.redirect('/dashboard');
+        const repoId = result.lastID;
+
+        // Set up webhook automatically
+        const webhookUrl = `${process.env.APP_URL}/repositories/webhook/${repoId}`;
+        await setupWebhook(req.user.access_token, owner, repoName, webhookUrl);
+
+        // Clone repository and start deployment
+        await deploymentService.cloneAndDeploy(repoId, repoUrl);
+
+        res.json({ success: true, repoId });
     } catch (error) {
         console.error('Error adding repository:', error);
         res.status(500).json({ error: 'Failed to add repository' });
@@ -341,6 +414,138 @@ router.delete('/:repoId', ensureAuthenticated, async (req, res) => {
     } catch (error) {
         console.error('Delete error:', error);
         res.status(500).json({ error: 'Failed to delete repository' });
+    }
+});
+
+// Route to handle GitHub webhooks
+router.post('/webhook/:repoId', async (req, res) => {
+    const { repoId } = req.params;
+    const event = req.headers['x-github-event'];
+    const signature = req.headers['x-hub-signature-256'];
+    const payload = JSON.stringify(req.body);
+
+    try {
+        // Verify webhook signature
+        if (!verifyWebhookSignature(payload, signature)) {
+            console.error('Invalid webhook signature');
+            return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+
+        // Get repository information
+        const repo = await dbGet('SELECT * FROM repositories WHERE id = ?', [repoId]);
+        
+        if (!repo) {
+            return res.status(404).json({ error: 'Repository not found' });
+        }
+
+        // Only handle push events
+        if (event !== 'push') {
+            return res.json({ message: 'Event ignored' });
+        }
+
+        // Update deployment status
+        await dbRun(
+            'UPDATE repositories SET status = ? WHERE id = ?',
+            ['DEPLOYING', repoId]
+        );
+
+        // Stop existing process if running
+        deploymentService.stopProcess(repoId);
+
+        // Get deployment directory
+        const deployDir = path.join(__dirname, '..', 'deployments', repo.user_id.toString(), repo.repo_name);
+        const git = simpleGit(deployDir);
+
+        try {
+            // Pull latest changes
+            await git.pull();
+            
+            // Get environment variables
+            const envVars = await dbAll(
+                'SELECT key, value FROM env_variables WHERE repo_id = ?',
+                [repoId]
+            );
+
+            // Create .env file
+            const envContent = envVars.map(({ key, value }) => `${key}=${value}`).join('\n');
+            await fs.writeFile(path.join(deployDir, '.env'), envContent);
+
+            // Start the deployment process
+            await deploymentService.startProcess(repoId, false);
+
+            await dbRun(
+                'UPDATE repositories SET status = ?, last_deploy = ? WHERE id = ?',
+                ['SUCCESS', new Date().toISOString(), repoId]
+            );
+
+            res.json({ success: true, message: 'Deployment successful' });
+        } catch (error) {
+            console.error('Deployment error:', error);
+            await dbRun(
+                'UPDATE repositories SET status = ? WHERE id = ?',
+                ['FAILED', repoId]
+            );
+            throw error;
+        }
+    } catch (error) {
+        console.error('Webhook error:', error);
+        res.status(500).json({ error: 'Webhook processing failed', details: error.message });
+    }
+});
+
+// Start repository (using existing files)
+router.post('/start/:repoId', async (req, res) => {
+    try {
+        const repoId = req.params.repoId;
+        const repo = await deploymentService.getRepository(repoId);
+        if (!repo) {
+            return res.status(404).json({ success: false, error: 'Repository not found' });
+        }
+
+        await deploymentService.startProcess(repoId, false); // false means don't pull new changes
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error starting repository:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Re-deploy repository (pull and start)
+router.post('/deploy/:repoId', async (req, res) => {
+    try {
+        const repoId = req.params.repoId;
+        const repo = await deploymentService.getRepository(repoId);
+        if (!repo) {
+            return res.status(404).json({ success: false, error: 'Repository not found' });
+        }
+
+        await deploymentService.startProcess(repoId, true); // true means pull new changes
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deploying repository:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Route to get repository port
+router.get('/port/:repoId', ensureAuthenticated, async (req, res) => {
+    const { repoId } = req.params;
+
+    try {
+        const repo = await dbGet(
+            'SELECT * FROM repositories WHERE id = ? AND user_id = ?',
+            [repoId, req.user.id]
+        );
+
+        if (!repo) {
+            return res.status(404).json({ error: 'Repository not found' });
+        }
+
+        const port = deploymentService.getProcessPort(repoId);
+        res.json({ port });
+    } catch (error) {
+        console.error('Error getting repository port:', error);
+        res.status(500).json({ error: 'Failed to get repository port' });
     }
 });
 

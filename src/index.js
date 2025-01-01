@@ -6,7 +6,9 @@ const GitHubStrategy = require('passport-github2').Strategy;
 const morgan = require('morgan');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const DeploymentService = require('./services/deployment');
 const repositoryRoutes = require('./routes/repository');
+const monitoringRoutes = require('./routes/monitoring');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,6 +22,9 @@ const db = new sqlite3.Database('database.sqlite', (err) => {
     initializeDatabase();
   }
 });
+
+// Create deployment service instance
+const deploymentService = new DeploymentService(db);
 
 // Initialize database tables
 function initializeDatabase() {
@@ -38,6 +43,7 @@ function initializeDatabase() {
       user_id INTEGER,
       repo_name TEXT,
       repo_url TEXT,
+      deploy_path TEXT,
       last_deploy TEXT,
       status TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id)
@@ -146,7 +152,25 @@ app.get('/dashboard', ensureAuthenticated, (req, res) => {
       console.error('Error fetching repositories:', err);
       repos = [];
     }
-    res.render('dashboard', { user: req.user, repos: repos });
+    res.render('dashboard', { 
+      user: req.user, 
+      repos: repos,
+      page: 'dashboard'
+    });
+  });
+});
+
+app.get('/monitoring', ensureAuthenticated, (req, res) => {
+  res.render('monitoring', { 
+    user: req.user,
+    page: 'monitoring'
+  });
+});
+
+app.get('/settings', ensureAuthenticated, (req, res) => {
+  res.render('settings', { 
+    user: req.user,
+    page: 'settings'
   });
 });
 
@@ -158,6 +182,9 @@ app.get('/logout', (req, res) => {
 
 // Repository routes
 app.use('/repositories', repositoryRoutes);
+
+// Monitoring routes
+app.use('/monitoring', monitoringRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

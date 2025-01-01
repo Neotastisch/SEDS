@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EzDeploy Dashboard</title>
+    <title>Dashboard - SEDS</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
@@ -13,16 +13,24 @@
             font-family: 'Monaco', 'Consolas', monospace;
             height: 300px;
             overflow-y: auto;
+            padding: 8px;
+            font-size: 12px;
+            line-height: 1.4;
         }
         .log-entry {
             padding: 2px 8px;
             border-bottom: 1px solid #333;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
         .log-entry.stdout { color: #2ecc71; }
         .log-entry.stderr { color: #e74c3c; }
+        .log-entry.info { color: #3498db; }
+        .log-entry.error { color: #e74c3c; }
         .log-timestamp {
             color: #666;
             font-size: 0.8em;
+            margin-right: 8px;
         }
         .status-badge {
             padding: 0.5rem 1rem;
@@ -66,26 +74,7 @@
 </head>
 <body class="bg-gray-50">
     <div class="min-h-screen">
-        <!-- Sidebar -->
-        <div class="fixed inset-y-0 left-0 w-64 bg-white shadow-lg">
-            <div class="flex items-center justify-center h-16 border-b">
-                <h1 class="text-xl font-bold text-gray-800">EzDeploy</h1>
-            </div>
-            <nav class="mt-4">
-                <a href="/dashboard" class="flex items-center px-6 py-3 text-gray-700 bg-gray-100">
-                    <i class="fas fa-th-large mr-3"></i>
-                    Dashboard
-                </a>
-                <a href="#" class="flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50">
-                    <i class="fas fa-chart-line mr-3"></i>
-                    Monitoring
-                </a>
-                <a href="#" class="flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50">
-                    <i class="fas fa-cog mr-3"></i>
-                    Settings
-                </a>
-            </nav>
-        </div>
+        <%- include('partials/sidebar') %>
 
         <!-- Main Content -->
         <div class="ml-64 p-8">
@@ -110,7 +99,7 @@
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <% if (repos && repos.length > 0) { %>
                     <% repos.forEach(function(repo) { %>
-                        <div class="bg-white rounded-lg shadow-md overflow-hidden" data-repo-id="<%= repo.id %>">
+                        <div class="bg-white rounded-lg shadow-md overflow-hidden repo-item" data-repo-id="<%= repo.id %>">
                             <!-- Repository Header -->
                             <div class="p-4 border-b">
                                 <div class="flex justify-between items-start">
@@ -156,23 +145,27 @@
                             <!-- Tabs -->
                             <div class="border-t">
                                 <div class="flex border-b">
-                                    <button onclick="showTab(this, 'actions-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                    <button onclick="showTab(this, 'actions-<%= repo.id %>')" class="tab-button flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none active bg-gray-100 text-gray-900">
                                         Actions
                                     </button>
-                                    <button onclick="showTab(this, 'env-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                    <button onclick="showTab(this, 'env-<%= repo.id %>')" class="tab-button flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none">
                                         Environment
                                     </button>
-                                    <button onclick="showTab(this, 'logs-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                    <button onclick="showTab(this, 'logs-<%= repo.id %>')" class="tab-button flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none">
                                         Logs
                                     </button>
                                 </div>
 
                                 <!-- Tab Contents -->
-                                <div id="actions-<%= repo.id %>" class="tab-content p-4">
+                                <div id="actions-<%= repo.id %>" class="tab-content p-4" style="display: block;">
                                     <div class="flex flex-col space-y-2">
+                                        <button onclick="startRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
+                                            <i class="fas fa-play mr-2"></i>
+                                            Start
+                                        </button>
                                         <button onclick="deployRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
                                             <i class="fas fa-rocket mr-2"></i>
-                                            Deploy Now
+                                            Re-Deploy (Pull & Start)
                                         </button>
                                         <button onclick="restartRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
                                             <i class="fas fa-redo mr-2"></i>
@@ -187,23 +180,43 @@
 
                                 <div id="env-<%= repo.id %>" class="tab-content p-4" style="display: none;">
                                     <form onsubmit="saveEnvVars(event, '<%= repo.id %>')">
-                                        <div id="env-list-<%= repo.id %>" class="space-y-2">
-                                            <!-- Environment variables will be loaded here -->
-                                        </div>
-                                        <div class="mt-4 flex space-x-2">
-                                            <button type="button" onclick="addEnvVar('<%= repo.id %>')" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
-                                                <i class="fas fa-plus mr-2"></i>
-                                                Add Variable
-                                            </button>
-                                            <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
-                                                <i class="fas fa-save mr-2"></i>
-                                                Save
-                                            </button>
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">Individual Variables</label>
+                                                <div id="env-list-<%= repo.id %>" class="space-y-2">
+                                                    <!-- Environment variables will be loaded here -->
+                                                </div>
+                                                <div class="mt-2">
+                                                    <button type="button" onclick="addEnvVar('<%= repo.id %>')" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
+                                                        <i class="fas fa-plus mr-2"></i>
+                                                        Add Variable
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="border-t pt-4">
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">Bulk Input (.env format)</label>
+                                                <textarea id="bulk-env-<%= repo.id %>" 
+                                                    class="w-full h-32 px-3 py-2 border rounded font-mono text-sm"
+                                                    placeholder="KEY1=value1&#10;KEY2=value2"></textarea>
+                                                <p class="mt-1 text-sm text-gray-500">Paste your environment variables in .env format</p>
+                                                <button type="button" onclick="parseBulkEnv('<%= repo.id %>')" class="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                                                    <i class="fas fa-file-import mr-2"></i>
+                                                    Parse Bulk Input
+                                                </button>
+                                            </div>
+
+                                            <div class="border-t pt-4">
+                                                <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
+                                                    <i class="fas fa-save mr-2"></i>
+                                                    Save All Variables
+                                                </button>
+                                            </div>
                                         </div>
                                     </form>
                                 </div>
 
-                                <div id="logs-<%= repo.id %>" class="tab-content" style="display: none;">
+                                <div id="logs-<%= repo.id %>" class="tab-content p-4" style="display: none;">
                                     <div id="logs-content-<%= repo.id %>" class="logs-panel">
                                         <!-- Logs will be loaded here -->
                                     </div>
@@ -354,14 +367,21 @@
         });
 
         function showTab(button, tabId) {
-            // Remove active class from all buttons and tabs in the same panel
-            const panel = button.closest('.tab-panel');
-            panel.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
-            panel.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-            
-            // Add active class to clicked button and corresponding tab
-            button.classList.add('active');
-            document.getElementById(tabId).classList.add('active');
+            // Get all tab buttons and contents in the repository card
+            const card = button.closest('.repo-item');
+            const allButtons = card.querySelectorAll('.tab-button');
+            const allContents = card.querySelectorAll('.tab-content');
+
+            // Remove active class from all buttons and hide all contents
+            allButtons.forEach(btn => btn.classList.remove('active', 'bg-gray-100', 'text-gray-900'));
+            allContents.forEach(content => content.style.display = 'none');
+
+            // Add active class to clicked button and show corresponding content
+            button.classList.add('active', 'bg-gray-100', 'text-gray-900');
+            const content = document.getElementById(tabId);
+            if (content) {
+                content.style.display = 'block';
+            }
 
             // If logs tab is selected, start fetching logs
             if (tabId.startsWith('logs-')) {
@@ -386,8 +406,8 @@
                         const logsContent = document.getElementById(`logs-content-${repoId}`);
                         logsContent.innerHTML = logs.map(log => `
                             <div class="log-entry ${log.type}">
-                                <span class="log-timestamp">${new Date(log.timestamp).toLocaleString()}</span>
-                                ${log.message}
+                                <span class="log-timestamp">[${new Date(log.timestamp).toLocaleTimeString()}]</span>
+                                <span class="log-message">${log.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>
                             </div>
                         `).join('');
                         
@@ -526,6 +546,39 @@
             addFirstRepoBtn.addEventListener('click', () => {
                 window.location.href = '/repositories/add';
             });
+        }
+
+        function parseBulkEnv(repoId) {
+            const bulkInput = document.getElementById(`bulk-env-${repoId}`).value;
+            const envList = document.getElementById(`env-list-${repoId}`);
+            
+            // Clear existing variables
+            envList.innerHTML = '';
+            
+            // Parse bulk input
+            const lines = bulkInput.split('\n');
+            lines.forEach(line => {
+                line = line.trim();
+                if (line && !line.startsWith('#')) {
+                    const [key, ...valueParts] = line.split('=');
+                    const value = valueParts.join('='); // Rejoin in case value contains =
+                    if (key) {
+                        addEnvVar(repoId, key.trim(), value.trim());
+                    }
+                }
+            });
+        }
+
+        function startRepo(repoId) {
+            fetch(`/repositories/start/${repoId}`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        location.reload();
+                    } else {
+                        alert('Failed to start repository: ' + data.error);
+                    }
+                });
         }
     </script>
 </body>

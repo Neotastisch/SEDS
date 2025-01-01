@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoring - SEDS</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <%- include('partials/sidebar') %>
+
+        <!-- Main Content -->
+        <div class="ml-64 p-8">
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold text-gray-800">System Monitoring</h2>
+                <p class="text-gray-600">Monitor your deployments and system resources</p>
+            </div>
+
+            <!-- System Overview -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Active Deployments</h3>
+                    <div class="text-3xl font-bold text-blue-600" id="activeDeployments">0</div>
+                </div>
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Total Memory Usage</h3>
+                    <div class="text-3xl font-bold text-green-600" id="totalMemory">0 MB</div>
+                </div>
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Average CPU Usage</h3>
+                    <div class="text-3xl font-bold text-purple-600" id="avgCpu">0%</div>
+                </div>
+            </div>
+
+            <!-- Repositories Status -->
+            <div class="bg-white rounded-lg shadow mb-8">
+                <div class="p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Repositories Status</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full">
+                            <thead>
+                                <tr class="bg-gray-50">
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Repository</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CPU</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Memory</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Deploy</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reposList">
+                                <!-- Repository rows will be added here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Resource Usage Charts -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">CPU Usage History</h3>
+                    <canvas id="cpuChart"></canvas>
+                </div>
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Memory Usage History</h3>
+                    <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize charts
+        const cpuChart = new Chart(document.getElementById('cpuChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'CPU Usage (%)',
+                    data: [],
+                    borderColor: 'rgb(79, 70, 229)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        const memoryChart = new Chart(document.getElementById('memoryChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Memory Usage (MB)',
+                    data: [],
+                    borderColor: 'rgb(16, 185, 129)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // Update monitoring data
+        function updateMonitoring() {
+            fetch('/monitoring/stats')
+                .then(response => response.json())
+                .then(data => {
+                    // Update overview stats
+                    document.getElementById('activeDeployments').textContent = data.activeDeployments;
+                    document.getElementById('totalMemory').textContent = `${data.totalMemory} MB`;
+                    document.getElementById('avgCpu').textContent = `${data.averageCpu}%`;
+
+                    // Update repositories table
+                    const reposList = document.getElementById('reposList');
+                    reposList.innerHTML = data.repositories.map(repo => `
+                        <tr>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm font-medium text-gray-900">${repo.name}</div>
+                                <div class="text-sm text-gray-500">${repo.url}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                    ${repo.status === 'SUCCESS' ? 'bg-green-100 text-green-800' : 
+                                    repo.status === 'FAILED' ? 'bg-red-100 text-red-800' : 
+                                    'bg-yellow-100 text-yellow-800'}">
+                                    ${repo.status}
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${repo.cpu}%</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${repo.memory} MB</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                ${new Date(repo.lastDeploy).toLocaleString()}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                <button onclick="redeployRepo('${repo.id}')" class="text-indigo-600 hover:text-indigo-900">
+                                    <i class="fas fa-sync-alt"></i>
+                                </button>
+                                <button onclick="showLogs('${repo.id}')" class="ml-3 text-blue-600 hover:text-blue-900">
+                                    <i class="fas fa-list-alt"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `).join('');
+
+                    // Update charts
+                    const now = new Date().toLocaleTimeString();
+                    
+                    // CPU Chart
+                    cpuChart.data.labels.push(now);
+                    cpuChart.data.datasets[0].data.push(data.averageCpu);
+                    if (cpuChart.data.labels.length > 20) {
+                        cpuChart.data.labels.shift();
+                        cpuChart.data.datasets[0].data.shift();
+                    }
+                    cpuChart.update();
+
+                    // Memory Chart
+                    memoryChart.data.labels.push(now);
+                    memoryChart.data.datasets[0].data.push(data.totalMemory);
+                    if (memoryChart.data.labels.length > 20) {
+                        memoryChart.data.labels.shift();
+                        memoryChart.data.datasets[0].data.shift();
+                    }
+                    memoryChart.update();
+                });
+        }
+
+        // Update every 2 seconds
+        updateMonitoring();
+        setInterval(updateMonitoring, 2000);
+
+        function redeployRepo(repoId) {
+            fetch(`/repositories/deploy/${repoId}`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        alert('Failed to redeploy: ' + data.error);
+                    }
+                });
+        }
+
+        function showLogs(repoId) {
+            window.location.href = `/dashboard?repo=${repoId}&tab=logs`;
+        }
+    </script>
+</body>
+</html> 

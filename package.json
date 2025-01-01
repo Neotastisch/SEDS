@@ -1,5 +1,5 @@
 {
-  "name": "ezdeploy",
+  "name": "seds",
   "version": "1.0.0",
   "main": "src/index.js",
   "scripts": {
@@ -10,18 +10,19 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "Simple GitHub-based deployment system",
+  "description": "Super Easy Deploy System",
   "dependencies": {
+    "@octokit/rest": "^21.0.2",
+    "dotenv": "^16.3.1",
+    "ejs": "^3.1.9",
     "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "morgan": "^1.10.0",
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
-    "sqlite3": "^5.1.6",
-    "dotenv": "^16.3.1",
-    "express-session": "^1.17.3",
+    "pidusage": "^3.0.2",
     "simple-git": "^3.21.0",
-    "morgan": "^1.10.0",
-    "ejs": "^3.1.9",
-    "pidusage": "^3.0.2"
+    "sqlite3": "^5.1.6"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
