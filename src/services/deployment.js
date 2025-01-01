@@ -1,7 +1,6 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
-const pidusage = require('pidusage');
 const simpleGit = require('simple-git');
 
 class DeploymentService {
@@ -11,13 +10,39 @@ class DeploymentService {
         this.logs = new Map();
         this.autoStart = true; // Default to true
         
-        // Initialize logs and process info for existing repositories
-        this.initializeRepositories().catch(err => {
-            console.error('Error initializing repositories:', err);
+        // Check Docker and initialize
+        this.checkDockerRequirement().then(() => {
+            this.initializeRepositories().catch(err => {
+                console.error('Error initializing repositories:', err);
+            });
         });
     }
 
-    // Helper method to promisify database queries
+    async checkDockerRequirement() {
+        try {
+            await new Promise((resolve, reject) => {
+                const dockerVersion = spawn('docker', ['--version']);
+                dockerVersion.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error('Docker command failed'));
+                });
+                dockerVersion.on('error', (err) => {
+                    if (err.code === 'ENOENT') {
+                        reject(new Error('Docker is not installed or not in PATH'));
+                    } else {
+                        reject(err);
+                    }
+                });
+            });
+            console.log('Docker is available');
+        } catch (error) {
+            console.error('Docker is required but not available:', error.message);
+            console.error('Please install Docker and make sure it is running');
+            process.exit(1); // Exit the application if Docker is not available
+        }
+    }
+
+    // Database helper methods remain the same
     dbGet(sql, params = []) {
         return new Promise((resolve, reject) => {
             this.db.get(sql, params, (err, row) => {
@@ -45,6 +70,206 @@ class DeploymentService {
         });
     }
 
+    async startProcess(repoId, shouldPull = false) {
+        try {
+            const repo = await this.getRepository(repoId);
+            if (!repo) {
+                throw new Error('Repository not found');
+            }
+
+            // Initialize process info if not exists
+            if (!this.processes.has(repoId)) {
+                this.processes.set(repoId, {
+                    logs: [],
+                    stats: {
+                        cpu: 0,
+                        memory: 0,
+                        maxMemory: 512
+                    }
+                });
+            }
+
+            this.addLog(repoId, 'info', `Starting deployment process for ${repo.repo_name}`);
+
+            // Stop existing container if running
+            await this.stopProcess(repoId);
+
+            // Pull latest changes if requested
+            if (shouldPull) {
+                this.addLog(repoId, 'info', 'Pulling latest changes from repository...');
+                await this.pullRepository(repo);
+            }
+
+            // Get an available port for internal use
+            const internalPort = await this.getAvailablePort();
+
+            // Detect project type and get Dockerfile content
+            const projectType = await this.detectProjectType(repo.deploy_path, repoId);
+            const dockerfileContent = this.generateDockerfile(projectType);
+            
+            // Write Dockerfile
+            this.addLog(repoId, 'info', 'Creating Dockerfile...');
+            await fs.writeFile(path.join(repo.deploy_path, 'Dockerfile'), dockerfileContent);
+
+            // Build Docker image
+            this.addLog(repoId, 'info', 'Building Docker image (this may take a few minutes)...');
+            const containerName = `seds-${repoId}`;
+            const imageName = `seds-image-${repoId}`;
+            
+            try {
+                const buildOutput = await this.runDockerCommand(['build', '-t', imageName, repo.deploy_path], repoId);
+                this.addLog(repoId, 'info', 'Docker image built successfully');
+            } catch (error) {
+                this.addLog(repoId, 'error', `Failed to build Docker image: ${error.message}`);
+                throw error;
+            }
+
+            // Run container
+            this.addLog(repoId, 'info', 'Starting container...');
+            try {
+                await this.runDockerCommand([
+                    'run',
+                    '-d',
+                    '--name', containerName,
+                    '-p', `${internalPort}:${projectType.defaultPort}`,
+                    '--restart', 'unless-stopped',
+                    imageName
+                ], repoId);
+            } catch (error) {
+                this.addLog(repoId, 'error', `Failed to start container: ${error.message}`);
+                throw error;
+            }
+
+            // Update process info
+            const processInfo = this.processes.get(repoId);
+            processInfo.containerId = containerName;
+            processInfo.port = internalPort;
+
+            // Set up log streaming
+            this.setupLogStreaming(repoId, containerName);
+
+            // Start monitoring container stats
+            await this.startStatsMonitoring(repoId, containerName);
+            
+            await this.updateRepositoryStatus(repoId, 'SUCCESS');
+            
+            this.addLog(repoId, 'info', `Deployment successful. Container running on port ${internalPort}`);
+            return true;
+        } catch (error) {
+            this.addLog(repoId, 'error', `Failed to start process: ${error.message}`);
+            await this.updateRepositoryStatus(repoId, 'FAILED');
+            throw error;
+        }
+    }
+
+    async runDockerCommand(args, repoId = null) {
+        return new Promise((resolve, reject) => {
+            const process = spawn('docker', args);
+            let output = '';
+            
+            if (repoId) {
+                process.stdout.on('data', (data) => {
+                    const message = data.toString();
+                    output += message;
+                    this.addLog(repoId, 'stdout', message);
+                });
+
+                process.stderr.on('data', (data) => {
+                    const message = data.toString();
+                    output += message;
+                    this.addLog(repoId, 'stderr', message);
+                });
+            }
+
+            process.on('close', (code) => {
+                if (code === 0) resolve(output);
+                else reject(new Error(`Docker command failed with code ${code}. Output: ${output}`));
+            });
+
+            process.on('error', (err) => {
+                if (repoId) {
+                    this.addLog(repoId, 'error', `Docker command error: ${err.message}`);
+                }
+                reject(err);
+            });
+        });
+    }
+
+    setupLogStreaming(repoId, containerId) {
+        const logStream = spawn('docker', ['logs', '-f', containerId]);
+        
+        logStream.stdout.on('data', (data) => {
+            this.addLog(repoId, 'stdout', data.toString());
+        });
+
+        logStream.stderr.on('data', (data) => {
+            this.addLog(repoId, 'stderr', data.toString());
+        });
+
+        // Store the log stream for cleanup
+        const processInfo = this.processes.get(repoId);
+        if (processInfo) {
+            processInfo.logStream = logStream;
+        }
+    }
+
+    async stopProcess(repoId) {
+        const processInfo = this.processes.get(repoId);
+        if (processInfo) {
+            // Clear monitoring intervals and streams
+            if (processInfo.statsInterval) {
+                clearInterval(processInfo.statsInterval);
+                delete processInfo.statsInterval;
+            }
+            if (processInfo.logStream) {
+                processInfo.logStream.kill();
+                delete processInfo.logStream;
+            }
+
+            const containerName = `seds-${repoId}`;
+            try {
+                // Check if container exists
+                const checkOutput = await this.runDockerCommand(['ps', '-a', '--filter', `name=${containerName}`, '--format', '{{.ID}}']);
+                
+                if (checkOutput.trim()) {
+                    // Stop container if it's running
+                    try {
+                        await this.runDockerCommand(['stop', containerName]);
+                    } catch (error) {
+                        // Ignore error if container is not running
+                    }
+                    
+                    // Remove container
+                    try {
+                        await this.runDockerCommand(['rm', '-f', containerName]);
+                    } catch (error) {
+                        this.addLog(repoId, 'error', `Error removing container: ${error.message}`);
+                    }
+                }
+
+                // Remove image if it exists
+                try {
+                    const imageName = `seds-image-${repoId}`;
+                    await this.runDockerCommand(['rmi', '-f', imageName]);
+                } catch (error) {
+                    // Ignore error if image doesn't exist
+                }
+
+            } catch (error) {
+                this.addLog(repoId, 'error', `Error during cleanup: ${error.message}`);
+            }
+
+            // Reset stats
+            processInfo.stats = {
+                cpu: 0,
+                memory: 0,
+                maxMemory: 512
+            };
+            return true;
+        }
+        return false;
+    }
+
     async getRepository(repoId) {
         try {
             return await this.dbGet('SELECT * FROM repositories WHERE id = ?', [repoId]);
@@ -65,6 +290,9 @@ class DeploymentService {
 
     async initializeRepositories() {
         try {
+            // Clean up any existing containers from previous runs
+            await this.cleanupExistingContainers();
+
             const repos = await this.getAllRepositories();
             for (const repo of repos) {
                 if (!this.logs.has(repo.id)) {
@@ -93,137 +321,170 @@ class DeploymentService {
         }
     }
 
+    async cleanupExistingContainers() {
+        try {
+            // Get all containers with our prefix
+            const output = await this.runDockerCommand(['ps', '-a', '--filter', 'name=seds-', '--format', '{{.Names}}']);
+            const containers = output.trim().split('\n').filter(Boolean);
+
+            for (const container of containers) {
+                try {
+                    // Stop container if running
+                    await this.runDockerCommand(['stop', container]);
+                } catch (error) {
+                    // Ignore error if container is not running
+                }
+
+                try {
+                    // Remove container
+                    await this.runDockerCommand(['rm', '-f', container]);
+                } catch (error) {
+                    console.error(`Error removing container ${container}:`, error);
+                }
+            }
+
+            // Clean up images
+            try {
+                const imageOutput = await this.runDockerCommand(['images', 'seds-image-*', '--format', '{{.Repository}}']);
+                const images = imageOutput.trim().split('\n').filter(Boolean);
+                
+                for (const image of images) {
+                    await this.runDockerCommand(['rmi', '-f', image]);
+                }
+            } catch (error) {
+                // Ignore error if no images found
+            }
+        } catch (error) {
+            console.error('Error during cleanup:', error);
+        }
+    }
+
     setAutoStart(enabled) {
         this.autoStart = enabled;
     }
 
-    async startProcess(repoId, shouldPull = false) {
-        try {
-            const repo = await this.getRepository(repoId);
-            if (!repo) {
-                throw new Error('Repository not found');
-            }
+    getStartCommand(projectType, deployPath) {
+        switch (projectType.type) {
+            case 'nodejs':
+                const packageJson = require(path.join(deployPath, 'package.json'));
+                const startScript = packageJson.scripts?.start || 'node index.js';
+                const [command, ...args] = startScript.split(' ');
+                return { command, args };
 
-            // Initialize process info if not exists
-            if (!this.processes.has(repoId)) {
-                this.processes.set(repoId, {
-                    logs: [],
-                    stats: {
-                        cpu: 0,
-                        memory: 0,
-                        maxMemory: 512
-                    }
-                });
-            }
+            case 'python':
+                const mainFile = fs.existsSync(path.join(deployPath, 'app.py')) ? 'app.py' : 'main.py';
+                return { command: 'python', args: [mainFile] };
 
-            this.addLog(repoId, 'info', `Starting deployment process for ${repo.repo_name}`);
+            case 'java-maven':
+                return { command: 'mvn', args: ['spring-boot:run'] };
 
-            // Stop existing process if running
-            await this.stopProcess(repoId);
+            case 'java-gradle':
+                return { command: 'gradle', args: ['bootRun'] };
 
-            // Pull latest changes if requested
-            if (shouldPull) {
-                this.addLog(repoId, 'info', 'Pulling latest changes from repository...');
-                await this.pullRepository(repo);
-            }
+            case 'go':
+                return { command: 'go', args: ['run', '.'] };
 
-            // Detect project type and get start command
-            const startCommand = await this.detectProjectType(repo.deploy_path, repoId);
-            if (!startCommand) {
-                throw new Error('Could not determine project type');
-            }
-
-            // Get an available port for internal use
-            const internalPort = await this.getAvailablePort();
-            
-            // Set up environment with the internal port
-            const env = { 
-                ...process.env, 
-                PORT: internalPort,
-                INTERNAL_PORT: internalPort
-            };
-
-            // Start the process
-            const childProcess = spawn(startCommand.command, startCommand.args, {
-                cwd: repo.deploy_path,
-                env: env
-            });
-
-            // Update process info with the child process and port
-            const processInfo = this.processes.get(repoId);
-            processInfo.process = childProcess;
-            processInfo.port = internalPort;
-
-            // Handle process output
-            childProcess.stdout.on('data', (data) => {
-                const output = data.toString();
-                this.addLog(repoId, 'stdout', output);
-                
-                // Try to detect port from application output
-                const portMatch = output.match(/(?:listening|running|started).+?(?:port|:)\s*(\d+)/i);
-                if (portMatch && portMatch[1]) {
-                    const detectedPort = parseInt(portMatch[1]);
-                    if (detectedPort !== internalPort) {
-                        this.addLog(repoId, 'info', `Detected application trying to use port ${detectedPort}, redirecting to internal port ${internalPort}`);
-                    }
-                }
-            });
-
-            childProcess.stderr.on('data', (data) => {
-                this.addLog(repoId, 'stderr', data.toString());
-            });
-
-            childProcess.on('error', (error) => {
-                this.addLog(repoId, 'error', `Process error: ${error.message}`);
-            });
-
-            childProcess.on('exit', (code) => {
-                this.addLog(repoId, code === 0 ? 'info' : 'error', 
-                    `Process exited with code ${code}`);
-                // Don't delete the process info, just remove the process reference
-                const processInfo = this.processes.get(repoId);
-                if (processInfo) {
-                    delete processInfo.process;
-                }
-            });
-
-            // Start monitoring process stats
-            if (childProcess.pid) {
-                this.startStatsMonitoring(repoId, childProcess.pid);
-            }
-            
-            // Update repository status
-            await this.updateRepositoryStatus(repoId, 'SUCCESS');
-            
-            this.addLog(repoId, 'info', `Deployment process started successfully on internal port ${internalPort}`);
-            return true;
-        } catch (error) {
-            this.addLog(repoId, 'error', `Failed to start process: ${error.message}`);
-            await this.updateRepositoryStatus(repoId, 'FAILED');
-            throw error;
+            default:
+                throw new Error('Unsupported project type');
         }
     }
 
-    async startStatsMonitoring(repoId, pid) {
+    generateDockerfile(projectType) {
+        let dockerfile = '';
+        
+        switch (projectType.type) {
+            case 'nodejs':
+                dockerfile = `FROM node:16-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --production
+COPY . .
+EXPOSE ${projectType.defaultPort}
+ENV PORT=${projectType.defaultPort}
+CMD ["npm", "start"]`;
+                break;
+
+            case 'python':
+                dockerfile = `FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE ${projectType.defaultPort}
+ENV PORT=${projectType.defaultPort}
+CMD ["python", "app.py"]`;
+                break;
+
+            case 'java-maven':
+                dockerfile = `FROM maven:3.8-openjdk-11-slim AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline
+COPY src ./src
+RUN mvn package -DskipTests
+
+FROM openjdk:11-jre-slim
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE ${projectType.defaultPort}
+ENV PORT=${projectType.defaultPort}
+CMD ["java", "-jar", "app.jar"]`;
+                break;
+
+            case 'java-gradle':
+                dockerfile = `FROM gradle:7-jdk11-alpine AS build
+WORKDIR /app
+COPY build.gradle settings.gradle ./
+COPY src ./src
+RUN gradle bootJar --no-daemon
+
+FROM openjdk:11-jre-slim
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar app.jar
+EXPOSE ${projectType.defaultPort}
+ENV PORT=${projectType.defaultPort}
+CMD ["java", "-jar", "app.jar"]`;
+                break;
+
+            case 'go':
+                dockerfile = `FROM golang:1.17-alpine AS build
+WORKDIR /app
+COPY go.* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+
+FROM alpine:latest
+WORKDIR /app
+COPY --from=build /app/main .
+EXPOSE ${projectType.defaultPort}
+ENV PORT=${projectType.defaultPort}
+CMD ["./main"]`;
+                break;
+
+            default:
+                throw new Error('Unsupported project type');
+        }
+
+        return dockerfile;
+    }
+
+    async startStatsMonitoring(repoId, containerId) {
         const updateStats = async () => {
             try {
-                const stats = await pidusage(pid);
+                const stats = await this.getDockerStats(containerId);
                 const processInfo = this.processes.get(repoId);
                 if (processInfo) {
-                    processInfo.stats = {
-                        cpu: Math.round(stats.cpu),
-                        memory: Math.round(stats.memory / 1024 / 1024), // Convert to MB
-                        maxMemory: processInfo.stats.maxMemory
-                    };
+                    processInfo.stats = stats;
                 }
             } catch (error) {
-                // Process might have ended
+                // Container might have stopped
                 const processInfo = this.processes.get(repoId);
                 if (processInfo) {
                     processInfo.stats = {
                         cpu: 0,
                         memory: 0,
-                        maxMemory: processInfo.stats.maxMemory
+                        maxMemory: 512
                     };
                 }
             }
@@ -237,6 +498,35 @@ class DeploymentService {
         if (processInfo) {
             processInfo.statsInterval = statsInterval;
         }
+    }
+
+    async getDockerStats(containerId) {
+        return new Promise((resolve, reject) => {
+            const statsProcess = spawn('docker', ['stats', '--no-stream', '--format', '{{.CPUPerc}},{{.MemUsage}}', containerId]);
+            let output = '';
+
+            statsProcess.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+
+            statsProcess.on('close', (code) => {
+                if (code !== 0) {
+                    reject(new Error('Failed to get container stats'));
+                    return;
+                }
+
+                const [cpuStr, memStr] = output.trim().split(',');
+                const cpu = parseFloat(cpuStr.replace('%', ''));
+                const memory = parseInt(memStr.split('/')[0].trim().replace('MiB', ''));
+                const maxMemory = parseInt(memStr.split('/')[1].trim().replace('MiB', ''));
+
+                resolve({
+                    cpu,
+                    memory,
+                    maxMemory
+                });
+            });
+        });
     }
 
     addLog(repoId, type, message) {
@@ -263,31 +553,6 @@ class DeploymentService {
         if (processInfo.logs.length > 100) {
             processInfo.logs.shift();
         }
-    }
-
-    stopProcess(repoId) {
-        const processInfo = this.processes.get(repoId);
-        if (processInfo && processInfo.process) {
-            // Clear stats monitoring interval
-            if (processInfo.statsInterval) {
-                clearInterval(processInfo.statsInterval);
-                delete processInfo.statsInterval;
-            }
-
-            // Kill the process
-            this.addLog(repoId, 'info', 'Stopping process...');
-            processInfo.process.kill();
-            delete processInfo.process;
-
-            // Reset stats
-            processInfo.stats = {
-                cpu: 0,
-                memory: 0,
-                maxMemory: processInfo.stats.maxMemory
-            };
-            return true;
-        }
-        return false;
     }
 
     getLogs(repoId) {
@@ -387,22 +652,13 @@ class DeploymentService {
             
             // Check for package.json (Node.js project)
             if (files.includes('package.json')) {
-                const packageJson = JSON.parse(
-                    await fs.readFile(path.join(deployPath, 'package.json'), 'utf-8')
-                );
-
                 if (repoId) {
                     this.addLog(repoId, 'info', 'Detected Node.js project');
                 }
-                
-                // Use the start script from package.json or default to node index.js
-                const startScript = packageJson.scripts?.start || 'node index.js';
-                if (repoId) {
-                    this.addLog(repoId, 'info', `Using start command: ${startScript}`);
-                }
-
-                const [command, ...args] = startScript.split(' ');
-                return { command, args };
+                return {
+                    type: 'nodejs',
+                    defaultPort: 3000
+                };
             }
             
             // Check for requirements.txt (Python project)
@@ -412,10 +668,9 @@ class DeploymentService {
                     if (repoId) {
                         this.addLog(repoId, 'info', 'Detected Python project');
                     }
-                    const mainFile = pythonFiles.includes('app.py') ? 'app.py' : 'main.py';
                     return {
-                        command: 'python',
-                        args: [mainFile]
+                        type: 'python',
+                        defaultPort: 5000
                     };
                 }
             }
@@ -426,8 +681,8 @@ class DeploymentService {
                     this.addLog(repoId, 'info', 'Detected Java Maven project');
                 }
                 return {
-                    command: 'mvn',
-                    args: ['spring-boot:run']
+                    type: 'java-maven',
+                    defaultPort: 8080
                 };
             }
 
@@ -437,8 +692,8 @@ class DeploymentService {
                     this.addLog(repoId, 'info', 'Detected Java Gradle project');
                 }
                 return {
-                    command: 'gradle',
-                    args: ['bootRun']
+                    type: 'java-gradle',
+                    defaultPort: 8080
                 };
             }
 
@@ -448,8 +703,8 @@ class DeploymentService {
                     this.addLog(repoId, 'info', 'Detected Go project');
                 }
                 return {
-                    command: 'go',
-                    args: ['run', '.']
+                    type: 'go',
+                    defaultPort: 8080
                 };
             }
 

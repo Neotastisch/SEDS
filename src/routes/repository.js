@@ -236,8 +236,6 @@ router.get('/logs/:repoId', ensureAuthenticated, async (req, res) => {
             return res.status(404).json({ error: 'Repository not found' });
         }
 
-        const logs = deploymentService.getLogs(repoId);
-        console.log(`Fetching logs for repo ${repoId}:`, logs); // Debug logging
         res.json(logs || []);
     } catch (error) {
         console.error('Error fetching logs:', error);

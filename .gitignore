@@ -1,2 +1,6 @@
 .env
 node_modules
+src/deployments
+database.sqlite
+database.sqlite
+database.sqlite

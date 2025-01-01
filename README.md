@@ -9,8 +9,8 @@ A simple GitHub-based deployment system that allows users to easily deploy their
 ## Features
 
 - GitHub OAuth authentication
-- Support for both public and private repositories
-- Automatic deployment on repository updates with secure webhooks
+- Support for both public and private repositories 
+- Automatic deployment on repository updates with secure webhooks using Docker
 - Environment variable management
 - Real-time process monitoring (CPU, Memory usage)
 - Support for multiple project types:
@@ -32,6 +32,7 @@ A simple GitHub-based deployment system that allows users to easily deploy their
 - Node.js (v14 or higher)
 - SQLite3
 - Git
+- Docker
 
 ## Installation
 
@@ -154,7 +155,6 @@ npm run dev
 
 ## Future Improvements
 
-- Docker support
 - Multiple deployment environments
 - Advanced logging and monitoring
 - Custom domain support
