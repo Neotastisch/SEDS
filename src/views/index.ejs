@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EzDeploy - Simple GitHub Deployment</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #2ecc71;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to EzDeploy</h1>
+        <% if (user) { %>
+            <p>Welcome back, <%= user.username %>!</p>
+            <a href="/dashboard" class="btn">Go to Dashboard</a>
+            <a href="/logout" class="btn" style="background-color: #e74c3c;">Logout</a>
+        <% } else { %>
+            <p>Deploy your GitHub projects with one click!</p>
+            <a href="/auth/github" class="btn">Login with GitHub</a>
+        <% } %>
+    </div>
+</body>
+</html> 

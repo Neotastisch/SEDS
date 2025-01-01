@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EzDeploy Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .logs-panel {
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+            height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            padding: 2px 8px;
+            border-bottom: 1px solid #333;
+        }
+        .log-entry.stdout { color: #2ecc71; }
+        .log-entry.stderr { color: #e74c3c; }
+        .log-timestamp {
+            color: #666;
+            font-size: 0.8em;
+        }
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .status-badge.success { 
+            background-color: #10b981;
+            color: white;
+        }
+        .status-badge.pending { 
+            background-color: #f59e0b;
+            color: white;
+        }
+        .status-badge.failed { 
+            background-color: #ef4444;
+            color: white;
+        }
+        .status-badge.deploying { 
+            background-color: #3b82f6;
+            color: white;
+        }
+        .resource-stats {
+            font-size: 0.75rem;
+            color: #6b7280;
+            margin-top: 0.5rem;
+        }
+        .resource-bar {
+            height: 0.25rem;
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            margin-top: 0.25rem;
+        }
+        .resource-bar-fill {
+            height: 100%;
+            border-radius: 9999px;
+            transition: all 500ms;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <!-- Sidebar -->
+        <div class="fixed inset-y-0 left-0 w-64 bg-white shadow-lg">
+            <div class="flex items-center justify-center h-16 border-b">
+                <h1 class="text-xl font-bold text-gray-800">EzDeploy</h1>
+            </div>
+            <nav class="mt-4">
+                <a href="/dashboard" class="flex items-center px-6 py-3 text-gray-700 bg-gray-100">
+                    <i class="fas fa-th-large mr-3"></i>
+                    Dashboard
+                </a>
+                <a href="#" class="flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50">
+                    <i class="fas fa-chart-line mr-3"></i>
+                    Monitoring
+                </a>
+                <a href="#" class="flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50">
+                    <i class="fas fa-cog mr-3"></i>
+                    Settings
+                </a>
+            </nav>
+        </div>
+
+        <!-- Main Content -->
+        <div class="ml-64 p-8">
+            <!-- Header -->
+            <div class="flex justify-between items-center mb-8">
+                <div>
+                    <h2 class="text-2xl font-bold text-gray-800">Welcome, <%= user.username %>!</h2>
+                    <p class="text-gray-600">Manage your deployments</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button id="addRepo" class="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                        <i class="fas fa-plus mr-2"></i>
+                        Add Repository
+                    </button>
+                    <a href="/logout" class="px-4 py-2 text-gray-700 hover:text-gray-900">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Repository Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <% if (repos && repos.length > 0) { %>
+                    <% repos.forEach(function(repo) { %>
+                        <div class="bg-white rounded-lg shadow-md overflow-hidden" data-repo-id="<%= repo.id %>">
+                            <!-- Repository Header -->
+                            <div class="p-4 border-b">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <h3 class="text-lg font-semibold text-gray-800"><%= repo.repo_name %></h3>
+                                        <span class="status-badge <%= repo.status.toLowerCase() %>">
+                                            <%= repo.status %>
+                                        </span>
+                                    </div>
+                                    <div class="flex items-center space-x-2">
+                                        <button onclick="openRepoSettings('<%= repo.id %>')" class="text-gray-400 hover:text-gray-600">
+                                            <i class="fas fa-ellipsis-v"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="mt-2 text-sm text-gray-600">
+                                    Last deployed: <%= repo.last_deploy ? new Date(repo.last_deploy).toLocaleString() : 'Never' %>
+                                </div>
+                            </div>
+
+                            <!-- Resource Usage -->
+                            <div class="px-4 py-2 bg-gray-50">
+                                <div class="resource-stats">
+                                    <div class="flex justify-between mb-1">
+                                        <span>CPU Usage</span>
+                                        <span id="cpu-usage-<%= repo.id %>">0%</span>
+                                    </div>
+                                    <div class="resource-bar">
+                                        <div id="cpu-bar-<%= repo.id %>" class="resource-bar-fill bg-blue-500" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="resource-stats">
+                                    <div class="flex justify-between mb-1">
+                                        <span>Memory Usage</span>
+                                        <span id="memory-usage-<%= repo.id %>">0 MB</span>
+                                    </div>
+                                    <div class="resource-bar">
+                                        <div id="memory-bar-<%= repo.id %>" class="resource-bar-fill bg-green-500" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Tabs -->
+                            <div class="border-t">
+                                <div class="flex border-b">
+                                    <button onclick="showTab(this, 'actions-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                        Actions
+                                    </button>
+                                    <button onclick="showTab(this, 'env-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                        Environment
+                                    </button>
+                                    <button onclick="showTab(this, 'logs-<%= repo.id %>')" class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:text-gray-900 focus:bg-gray-50">
+                                        Logs
+                                    </button>
+                                </div>
+
+                                <!-- Tab Contents -->
+                                <div id="actions-<%= repo.id %>" class="tab-content p-4">
+                                    <div class="flex flex-col space-y-2">
+                                        <button onclick="deployRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                                            <i class="fas fa-rocket mr-2"></i>
+                                            Deploy Now
+                                        </button>
+                                        <button onclick="restartRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
+                                            <i class="fas fa-redo mr-2"></i>
+                                            Restart
+                                        </button>
+                                        <button onclick="stopRepo('<%= repo.id %>')" class="w-full px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                                            <i class="fas fa-stop mr-2"></i>
+                                            Stop
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div id="env-<%= repo.id %>" class="tab-content p-4" style="display: none;">
+                                    <form onsubmit="saveEnvVars(event, '<%= repo.id %>')">
+                                        <div id="env-list-<%= repo.id %>" class="space-y-2">
+                                            <!-- Environment variables will be loaded here -->
+                                        </div>
+                                        <div class="mt-4 flex space-x-2">
+                                            <button type="button" onclick="addEnvVar('<%= repo.id %>')" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
+                                                <i class="fas fa-plus mr-2"></i>
+                                                Add Variable
+                                            </button>
+                                            <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
+                                                <i class="fas fa-save mr-2"></i>
+                                                Save
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+
+                                <div id="logs-<%= repo.id %>" class="tab-content" style="display: none;">
+                                    <div id="logs-content-<%= repo.id %>" class="logs-panel">
+                                        <!-- Logs will be loaded here -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    <% }); %>
+                <% } else { %>
+                    <div class="col-span-full flex flex-col items-center justify-center p-8 bg-white rounded-lg shadow-md">
+                        <i class="fas fa-folder-open text-4xl text-gray-400 mb-4"></i>
+                        <p class="text-gray-600">No repositories added yet.</p>
+                        <button id="addFirstRepo" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                            Add Your First Repository
+                        </button>
+                    </div>
+                <% } %>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h3 class="text-lg font-semibold">Repository Settings</h3>
+                <button onclick="closeRepoSettings()" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="p-4">
+                <div id="settingsContent">
+                    <div class="space-y-4">
+                        <div class="border-t pt-4 mt-4">
+                            <h4 class="text-lg font-semibold text-red-600 mb-2">Danger Zone</h4>
+                            <p class="text-sm text-gray-600 mb-4">
+                                Once you delete a repository, there is no going back. Please be certain.
+                            </p>
+                            <button onclick="confirmDelete()" class="w-full px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center justify-center">
+                                <i class="fas fa-trash-alt mr-2"></i>
+                                Delete Repository
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteConfirmModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md">
+            <div class="p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Delete Repository</h3>
+                <p class="text-gray-600 mb-6">
+                    Are you sure you want to delete this repository? This action cannot be undone.
+                </p>
+                <div class="flex justify-end space-x-4">
+                    <button onclick="closeDeleteConfirm()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300 transition-colors">
+                        Cancel
+                    </button>
+                    <button onclick="deleteRepository()" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function deployRepo(repoId) {
+            fetch(`/repositories/deploy/${repoId}`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Deployment started!');
+                        // Show logs tab automatically after deployment starts
+                        const logsTab = document.querySelector(`button[onclick="showTab(this, 'logs-${repoId}')"]`);
+                        showTab(logsTab, `logs-${repoId}`);
+                    } else {
+                        alert('Deployment failed: ' + data.error);
+                    }
+                });
+        }
+
+        function showEnvVars(repoId) {
+            const envDiv = document.getElementById(`env-${repoId}`);
+            if (envDiv.style.display === 'none') {
+                fetch(`/repositories/env/${repoId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        const envList = document.getElementById(`env-list-${repoId}`);
+                        envList.innerHTML = '';
+                        data.forEach(env => {
+                            addEnvVar(repoId, env.key, env.value);
+                        });
+                        envDiv.style.display = 'block';
+                    });
+            } else {
+                envDiv.style.display = 'none';
+            }
+        }
+
+        function addEnvVar(repoId, key = '', value = '') {
+            const envList = document.getElementById(`env-list-${repoId}`);
+            const div = document.createElement('div');
+            div.className = 'flex space-x-2';
+            div.innerHTML = `
+                <input type="text" placeholder="KEY" value="${key}" class="flex-1 px-3 py-2 border rounded">
+                <input type="text" placeholder="VALUE" value="${value}" class="flex-1 px-3 py-2 border rounded">
+                <button type="button" onclick="this.parentElement.remove()" class="px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700">
+                    <i class="fas fa-trash"></i>
+                </button>
+            `;
+            envList.appendChild(div);
+        }
+
+        function saveEnvVars(event, repoId) {
+            event.preventDefault();
+            const envList = document.getElementById(`env-list-${repoId}`);
+            const vars = [];
+            envList.querySelectorAll('div').forEach(div => {
+                const inputs = div.querySelectorAll('input');
+                if (inputs[0].value) {
+                    vars.push({
+                        key: inputs[0].value,
+                        value: inputs[1].value
+                    });
+                }
+            });
+
+            fetch(`/repositories/env/${repoId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vars })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Environment variables saved!');
+                } else {
+                    alert('Failed to save environment variables: ' + data.error);
+                }
+            });
+        }
+
+        document.getElementById('addRepo').addEventListener('click', () => {
+            window.location.href = '/repositories/add';
+        });
+
+        function showTab(button, tabId) {
+            // Remove active class from all buttons and tabs in the same panel
+            const panel = button.closest('.tab-panel');
+            panel.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            panel.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            
+            // Add active class to clicked button and corresponding tab
+            button.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+
+            // If logs tab is selected, start fetching logs
+            if (tabId.startsWith('logs-')) {
+                const repoId = tabId.split('-')[1];
+                startLogPolling(repoId);
+            }
+        }
+
+        const logPollingIntervals = {};
+
+        function startLogPolling(repoId) {
+            // Clear existing interval if any
+            if (logPollingIntervals[repoId]) {
+                clearInterval(logPollingIntervals[repoId]);
+            }
+
+            // Function to fetch and update logs
+            const updateLogs = () => {
+                fetch(`/repositories/logs/${repoId}`)
+                    .then(response => response.json())
+                    .then(logs => {
+                        const logsContent = document.getElementById(`logs-content-${repoId}`);
+                        logsContent.innerHTML = logs.map(log => `
+                            <div class="log-entry ${log.type}">
+                                <span class="log-timestamp">${new Date(log.timestamp).toLocaleString()}</span>
+                                ${log.message}
+                            </div>
+                        `).join('');
+                        
+                        // Auto-scroll to bottom
+                        logsContent.scrollTop = logsContent.scrollHeight;
+                    })
+                    .catch(error => console.error('Error fetching logs:', error));
+            };
+
+            // Initial update
+            updateLogs();
+
+            // Set up polling interval
+            logPollingIntervals[repoId] = setInterval(updateLogs, 2000);
+        }
+
+        let currentRepoId = null;
+
+        function openRepoSettings(repoId) {
+            currentRepoId = repoId;
+            document.getElementById('settingsModal').classList.remove('hidden');
+        }
+
+        function closeRepoSettings() {
+            document.getElementById('settingsModal').classList.add('hidden');
+            currentRepoId = null;
+        }
+
+        function confirmDelete() {
+            document.getElementById('deleteConfirmModal').classList.remove('hidden');
+        }
+
+        function closeDeleteConfirm() {
+            document.getElementById('deleteConfirmModal').classList.add('hidden');
+        }
+
+        function deleteRepository() {
+            if (!currentRepoId) return;
+
+            fetch(`/repositories/${currentRepoId}`, { 
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Close modals
+                    closeDeleteConfirm();
+                    closeRepoSettings();
+                    
+                    // Remove the repository card from the UI
+                    const repoCard = document.querySelector(`[data-repo-id="${currentRepoId}"]`);
+                    if (repoCard) {
+                        repoCard.remove();
+                    }
+
+                    // Check if there are no repositories left
+                    const repoGrid = document.querySelector('.grid');
+                    if (!repoGrid.children.length) {
+                        // Show the "Add First Repository" message
+                        repoGrid.innerHTML = `
+                            <div class="col-span-full flex flex-col items-center justify-center p-8 bg-white rounded-lg shadow-md">
+                                <i class="fas fa-folder-open text-4xl text-gray-400 mb-4"></i>
+                                <p class="text-gray-600">No repositories added yet.</p>
+                                <button id="addFirstRepo" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                                    Add Your First Repository
+                                </button>
+                            </div>
+                        `;
+                        
+                        // Reinitialize the "Add First Repository" button
+                        const addFirstRepoBtn = document.getElementById('addFirstRepo');
+                        if (addFirstRepoBtn) {
+                            addFirstRepoBtn.addEventListener('click', () => {
+                                window.location.href = '/repositories/add';
+                            });
+                        }
+                    }
+                } else {
+                    alert('Failed to delete repository: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting repository:', error);
+                alert('Failed to delete repository');
+            });
+        }
+
+        function restartRepo(repoId) {
+            fetch(`/repositories/restart/${repoId}`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const logsTab = document.querySelector(`button[onclick="showTab(this, 'logs-${repoId}')"]`);
+                        showTab(logsTab, `logs-${repoId}`);
+                    } else {
+                        alert('Failed to restart: ' + data.error);
+                    }
+                });
+        }
+
+        function stopRepo(repoId) {
+            fetch(`/repositories/stop/${repoId}`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const logsTab = document.querySelector(`button[onclick="showTab(this, 'logs-${repoId}')"]`);
+                        showTab(logsTab, `logs-${repoId}`);
+                    } else {
+                        alert('Failed to stop: ' + data.error);
+                    }
+                });
+        }
+
+        // Update resource usage periodically
+        function updateResourceUsage(repoId) {
+            fetch(`/repositories/stats/${repoId}`)
+                .then(response => response.json())
+                .then(stats => {
+                    document.getElementById(`cpu-usage-${repoId}`).textContent = `${stats.cpu}%`;
+                    document.getElementById(`cpu-bar-${repoId}`).style.width = `${stats.cpu}%`;
+                    document.getElementById(`memory-usage-${repoId}`).textContent = `${stats.memory} MB`;
+                    document.getElementById(`memory-bar-${repoId}`).style.width = `${(stats.memory / stats.maxMemory) * 100}%`;
+                });
+        }
+
+        // Initialize resource usage updates
+        <% if (repos && repos.length > 0) { %>
+            <% repos.forEach(function(repo) { %>
+                setInterval(() => updateResourceUsage('<%= repo.id %>'), 5000);
+            <% }); %>
+        <% } %>
+
+        // Handle "Add First Repository" button
+        const addFirstRepoBtn = document.getElementById('addFirstRepo');
+        if (addFirstRepoBtn) {
+            addFirstRepoBtn.addEventListener('click', () => {
+                window.location.href = '/repositories/add';
+            });
+        }
+    </script>
+</body>
+</html> 

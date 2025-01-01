@@ -1,0 +1,29 @@
+{
+  "name": "ezdeploy",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Simple GitHub-based deployment system",
+  "dependencies": {
+    "express": "^4.18.2",
+    "passport": "^0.7.0",
+    "passport-github2": "^0.1.12",
+    "sqlite3": "^5.1.6",
+    "dotenv": "^16.3.1",
+    "express-session": "^1.17.3",
+    "simple-git": "^3.21.0",
+    "morgan": "^1.10.0",
+    "ejs": "^3.1.9",
+    "pidusage": "^3.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

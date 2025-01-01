@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - EzDeploy</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f5f6fa;
+        }
+        .container {
+            max-width: 400px;
+            padding: 30px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h1 {
+            margin-bottom: 30px;
+            color: #2d3436;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #2ecc71;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #27ae60;
+        }
+        .github-btn {
+            background-color: #24292e;
+        }
+        .github-btn:hover {
+            background-color: #1a1e21;
+        }
+        .description {
+            margin: 20px 0;
+            color: #636e72;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to EzDeploy</h1>
+        <p class="description">Deploy your GitHub projects with one click!</p>
+        <a href="/auth/github" class="btn github-btn">
+            Login with GitHub
+        </a>
+    </div>
+</body>
+</html> 
