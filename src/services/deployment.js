@@ -115,6 +115,9 @@ class DeploymentService {
             this.addLog(repoId, 'info', 'Building Docker image (this may take a few minutes)...');
             const containerName = `seds-${repoId}`;
             const imageName = `seds-image-${repoId}`;
+
+            //remove docker container if it exists
+            await this.runDockerCommand(['rm', '-f', containerName], repoId);
             
             try {
                 const buildOutput = await this.runDockerCommand(['build', '-t', imageName, repo.deploy_path], repoId);
@@ -160,6 +163,14 @@ class DeploymentService {
             await this.updateRepositoryStatus(repoId, 'FAILED');
             throw error;
         }
+    }
+
+    async fetchContainerLogs(repoId) {
+        const containerId = this.processes.get(repoId)?.containerId;
+        if (!containerId) {
+            return [];
+        }
+        return await this.runDockerCommand(['logs', '-f', containerId], repoId);
     }
 
     async runDockerCommand(args, repoId = null) {

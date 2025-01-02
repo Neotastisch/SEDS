@@ -60,6 +60,7 @@ function verifyWebhookSignature(payload, signature) {
 
 // Helper function to set up GitHub webhook
 async function setupWebhook(accessToken, owner, repo, webhookUrl) {
+    return true;
     const octokit = new Octokit({ auth: accessToken });
     
     try {
@@ -236,6 +237,7 @@ router.get('/logs/:repoId', ensureAuthenticated, async (req, res) => {
             return res.status(404).json({ error: 'Repository not found' });
         }
 
+        const logs = await deploymentService.fetchContainerLogs(repoId);
         res.json(logs || []);
     } catch (error) {
         console.error('Error fetching logs:', error);
